@@ -1,6 +1,6 @@
-"""Grammatical evolution for discovering a Chomsky-normal-form grammar.
+"""Paper 2 grammatical evolution with fitness-landscape flattening.
 
-The program follows the CS 4731 Paper 3 specification.  It evolves grammars
+The program follows the CS 4731 Paper 2 specification.  It evolves grammars
 over a configurable fixed set of nonterminals and the terminals a, b, c,
 using N1 as the start symbol.
 
@@ -53,7 +53,7 @@ NONTERMINALS = tuple(f"N{index}" for index in range(1, DEFAULT_NONTERMINAL_COUNT
 START_SYMBOL = NONTERMINALS[0]
 
 POPULATION_SIZE = 100
-TOURNAMENT_SIZE = 3
+SELECTION_SAMPLE_SIZE = 10
 ELITE_COUNT = 4
 DEFAULT_GENERATIONS = 1000
 TRIAL_COUNT = 5
@@ -62,6 +62,9 @@ C1 = 100.0
 C2 = 80.0
 C3 = 2.0
 C4 = 0.1
+FLATTENING_LOWER_BOUND = 95.0
+FLATTENING_UPPER_BOUND = 110.0
+FLATTENED_FITNESS = 95.0
 MAX_LANGUAGE_LENGTH = 15  # Must be at least the longest string in the selected data.
 LANGUAGE_CELL_LIMIT = 1024
 TARGET_LANGUAGE_STORAGE_LIMIT = 10_000
@@ -156,6 +159,7 @@ class FitnessBreakdown:
     language_size_lower_bound: int
     language_size_exact: bool
     rule_count: int
+    core_fitness: float | None = None
 
 
 @dataclass
@@ -555,9 +559,34 @@ def crossover(
     return Individual(child_one), Individual(child_two)
 
 
-def tournament(population: Sequence[Individual], rng: random.Random) -> Individual:
-    contestants = rng.sample(population, k=min(TOURNAMENT_SIZE, len(population)))
-    return max(contestants, key=lambda individual: individual.fitness)
+def flatten_fitness(core_fitness: float) -> float:
+    """Apply the Paper 2 plateau transform to a core fitness value."""
+    if FLATTENING_LOWER_BOUND <= core_fitness <= FLATTENING_UPPER_BOUND:
+        return FLATTENED_FITNESS
+    return core_fitness
+
+
+def fitness_proportional_selection(
+    population: Sequence[Individual],
+    rng: random.Random,
+) -> Individual:
+    """Select from a random sample using transformed-fitness proportions.
+
+    Paper 2 specifies a fresh sample of ten for each parent selection.  Runs
+    with a smaller test population use the complete population.  Clamping at
+    zero is a defensive measure for the otherwise undefined case of a
+    negative fitness weight; if every weight is zero, selection is uniform.
+    """
+    if not population:
+        raise ValueError("Cannot select a parent from an empty population.")
+    sample = rng.sample(
+        population,
+        k=min(SELECTION_SAMPLE_SIZE, len(population)),
+    )
+    weights = [max(0.0, individual.fitness) for individual in sample]
+    if sum(weights) == 0.0:
+        return rng.choice(sample)
+    return rng.choices(sample, weights=weights, k=1)[0]
 
 
 def accepts(
@@ -1123,12 +1152,13 @@ class FitnessEvaluator:
             else 0.0
         )
         similarity = sum(similarities) / example_count
-        value = (
+        core_fitness = (
             C1 * recall
             + C2 * precision
             + C3 * similarity
             - C4 * len(individual.rules)
         )
+        value = flatten_fitness(core_fitness)
         result = FitnessBreakdown(
             fitness=value,
             recall=recall,
@@ -1138,6 +1168,7 @@ class FitnessEvaluator:
             language_size_lower_bound=language.size_lower_bound,
             language_size_exact=language.exact_size,
             rule_count=len(individual.rules),
+            core_fitness=core_fitness,
         )
         individual.fitness = value
         self._cache[individual.rules] = result
@@ -1152,7 +1183,7 @@ def next_generation(
     evaluator: FitnessEvaluator,
     rng: random.Random,
 ) -> list[Individual]:
-    """Apply elitism, tournament selection, four-child crossover, and mutation."""
+    """Apply elitism, proportional selection, four-child crossover, and mutation."""
     population_size = len(population)
     elites = [
         individual.copy()
@@ -1163,8 +1194,8 @@ def next_generation(
     children: list[Individual] = []
     failed_crossovers = 0
     while len(elites) + len(children) < population_size:
-        parent_one = tournament(population, rng)
-        parent_two = tournament(population, rng)
+        parent_one = fitness_proportional_selection(population, rng)
+        parent_two = fitness_proportional_selection(population, rng)
         crossed = crossover(parent_one, parent_two, rng, evaluator.config)
         if crossed is None:
             failed_crossovers += 1
@@ -1360,11 +1391,14 @@ def format_grammar(
 
 def parse_arguments() -> argparse.Namespace:
     project_directory = Path(__file__).resolve().parents[2]
-    default_data = project_directory / "Data" / "grammarData.xlsx"
+    data_directory = project_directory / "Data"
+    if not data_directory.exists():
+        data_directory = project_directory.parent / "Paper 1" / "Data"
+    default_data = data_directory / "grammarData.xlsx"
     if not default_data.exists():
-        default_data = project_directory / "Data" / "Spreadsheets" / "E1Data.xlsx"
+        default_data = data_directory / "Spreadsheets" / "E1Data.xlsx"
     parser = argparse.ArgumentParser(
-        description="Evolve a CNF grammar from the Paper 3 training strings."
+        description="Run the Paper 2 fitness-landscape-flattening experiment."
     )
     parser.add_argument(
         "data",
@@ -1372,8 +1406,8 @@ def parse_arguments() -> argparse.Namespace:
         type=Path,
         default=default_data,
         help=(
-            "training workbook (default: ../Data/grammarData.xlsx or "
-            "../Data/Spreadsheets/E1Data.xlsx)"
+            "training workbook (default: local Paper 2 Data, falling back to "
+            "the corresponding Paper 1 Data directory)"
         ),
     )
     parser.add_argument(

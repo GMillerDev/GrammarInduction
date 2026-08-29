@@ -7,11 +7,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import SigmoidFitnessFunctionPrograms.GE_SigmoidFitness as ge
+import FitnessProportional.FitnessProportional as ge
 
 
 DATA_FILE = (
-    Path(__file__).resolve().parents[2]
+    Path(__file__).resolve().parents[3]
+    / "Paper 1"
     / "Data"
     / "Spreadsheets"
     / "E1Data.xlsx"
@@ -68,6 +69,9 @@ class GrammaticalEvolutionTests(unittest.TestCase):
             breakdown.fitness,
             ge.C1 + ge.C2 * breakdown.precision + ge.C3 - ge.C4 * 6,
         )
+        self.assertAlmostEqual(
+            breakdown.fitness, breakdown.core_fitness  # type: ignore[arg-type]
+        )
 
     def test_revised_fitness_penalizes_overgeneralization(self) -> None:
         evaluator = ge.FitnessEvaluator(self.examples, language_sample_limit=64)
@@ -79,6 +83,54 @@ class GrammaticalEvolutionTests(unittest.TestCase):
         self.assertAlmostEqual(universal_metrics.recall, 1.0)
         self.assertLess(universal_metrics.precision, 0.1)
         self.assertGreater(target_metrics.fitness, universal_metrics.fitness)
+
+    def test_fitness_plateau_transform_has_inclusive_boundaries(self) -> None:
+        self.assertEqual(ge.flatten_fitness(94.999), 94.999)
+        self.assertEqual(ge.flatten_fitness(95.0), 95.0)
+        self.assertEqual(ge.flatten_fitness(102.5), 95.0)
+        self.assertEqual(ge.flatten_fitness(110.0), 95.0)
+        self.assertEqual(ge.flatten_fitness(110.001), 110.001)
+
+    def test_overgeneralized_fitness_is_flattened_but_core_is_retained(self) -> None:
+        evaluator = ge.FitnessEvaluator(self.examples, language_sample_limit=64)
+        metrics = evaluator.breakdown(ge.Individual(self.universal_rules))
+
+        self.assertIsNotNone(metrics.core_fitness)
+        assert metrics.core_fitness is not None
+        self.assertGreaterEqual(metrics.core_fitness, ge.FLATTENING_LOWER_BOUND)
+        self.assertLessEqual(metrics.core_fitness, ge.FLATTENING_UPPER_BOUND)
+        self.assertEqual(metrics.fitness, ge.FLATTENED_FITNESS)
+
+    def test_selection_uses_transformed_fitness_within_a_sample_of_ten(self) -> None:
+        class RecordingRandom:
+            def __init__(self) -> None:
+                self.sample_size: int | None = None
+                self.weights: list[float] | None = None
+
+            def sample(self, population, k):  # type: ignore[no-untyped-def]
+                self.sample_size = k
+                return list(population)[:k]
+
+            def choices(self, population, weights, k):  # type: ignore[no-untyped-def]
+                self.weights = list(weights)
+                return [population[-1]]
+
+            def choice(self, population):  # type: ignore[no-untyped-def]
+                return population[0]
+
+        population = [
+            ge.Individual(self.target_rules, float(index))
+            for index in range(1, 13)
+        ]
+        rng = RecordingRandom()
+
+        selected = ge.fitness_proportional_selection(
+            population, rng  # type: ignore[arg-type]
+        )
+
+        self.assertEqual(rng.sample_size, 10)
+        self.assertEqual(rng.weights, [float(index) for index in range(1, 11)])
+        self.assertIs(selected, population[9])
 
     def test_scaffolds_are_reachable_productive_and_pruned(self) -> None:
         for seed in range(20):
