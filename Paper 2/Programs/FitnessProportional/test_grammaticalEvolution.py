@@ -195,6 +195,24 @@ class GrammaticalEvolutionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ge.GrammarConfig.from_count(1)
 
+    def test_configurable_max_language_length_is_used_and_validated(self) -> None:
+        evaluator = ge.FitnessEvaluator(
+            self.examples[:2],
+            language_sample_limit=16,
+            max_length=2,
+        )
+        self.assertEqual(evaluator.max_length, 2)
+
+        with self.assertRaisesRegex(ValueError, "max_length must be at least 1"):
+            ge.FitnessEvaluator(self.examples[:2], max_length=0)
+        with self.assertRaisesRegex(
+            ValueError, "data contains a length-4 example"
+        ):
+            ge.FitnessEvaluator(
+                [ge.TrainingExample("aabb", 7)],
+                max_length=2,
+            )
+
     def test_bounded_language_generation(self) -> None:
         profile = ge.bounded_language_profile(self.target_rules, 6, 100)
         language = set(profile.strings)
@@ -240,6 +258,9 @@ class GrammaticalEvolutionTests(unittest.TestCase):
             self.assertEqual(target.rules, self.target_rules)
             self.assertEqual(target.max_length, 6)
             self.assertEqual(len(target.language), 14)
+
+            with self.assertRaisesRegex(ValueError, "selected maximum language length"):
+                ge.load_target_grammar(target_file, max_language_length=5)
 
             payload["start_symbol"] = "N2"
             target_file.write_text(json.dumps(payload), encoding="utf-8")
@@ -345,6 +366,7 @@ class GrammaticalEvolutionTests(unittest.TestCase):
             language_sample_limit=32,
             population_size=8,
             show_progress=False,
+            max_language_length=14,
         )
         self.assertEqual(result.completed_generations, 1)
         self.assertEqual(len(result.average_fitness), 2)

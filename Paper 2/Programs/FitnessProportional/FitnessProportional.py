@@ -12,6 +12,8 @@ Example:
         --nonterminals num                      : Fixed symbols N1 through N. Default: 4
         --language-sample-limit num             : Sets the number of generated strings used for
                                                   Levenshtein smoothing. Default: 256
+        --max-language-length num               : Maximum generated-string length used in fitness.
+                                                  Default: 30
         --target-grammar "[path\\target.json]"   : Stop on bounded target-language equivalence
         --target-equivalence-interval num        : Check every N generations. Default: 25
         --graph                                 : Generates a single graph with average and best
@@ -24,7 +26,7 @@ Example:
         --target-grammar "path\to\target.json"  : Target grammar for checking equivelance
         --target-equivalence-interval num       : Interval of generations in which it checks 
                                                   the semantic equivelance
-MAX_LANGUAGE_LENGTH must match the longest string length supported by the data.
+        --max-language-length num               : set max string length explored. Set to the max length in the data
 
 The workbook must contain the columns ``Generated String`` and
 ``Production Rule Applications``.  Python 3.10+, NumPy, and Matplotlib are required;
@@ -63,7 +65,7 @@ C1 = 100.0
 C2 = 80.0
 C3 = 2.0
 C4 = 0.1
-MAX_LANGUAGE_LENGTH = 30  # Must be at least the longest string in the selected data.
+MAX_LANGUAGE_LENGTH = 30  # CLI default; override with --max-language-length.
 LANGUAGE_CELL_LIMIT = 1024
 TARGET_LANGUAGE_STORAGE_LIMIT = 10_000
 DEFAULT_TARGET_EQUIVALENCE_INTERVAL = 25
@@ -834,6 +836,7 @@ def exact_bounded_language(
 def load_target_grammar(
     filename: Path,
     config: GrammarConfig = DEFAULT_GRAMMAR_CONFIG,
+    max_language_length: int = MAX_LANGUAGE_LENGTH,
 ) -> TargetGrammar:
     """Load and validate the documented CNF target-grammar JSON format."""
     try:
@@ -864,9 +867,12 @@ def load_target_grammar(
     max_length = payload["max_length"]
     if isinstance(max_length, bool) or not isinstance(max_length, int):
         raise ValueError('Target grammar "max_length" must be an integer.')
-    if not 1 <= max_length <= MAX_LANGUAGE_LENGTH:
+    if max_language_length < 1:
+        raise ValueError("max_language_length must be at least 1.")
+    if not 1 <= max_length <= max_language_length:
         raise ValueError(
-            f'Target grammar "max_length" must be between 1 and {MAX_LANGUAGE_LENGTH}.'
+            'Target grammar "max_length" must be between 1 and the selected '
+            f"maximum language length ({max_language_length})."
         )
 
     encoded_rules = payload["rules"]
@@ -1084,20 +1090,23 @@ class FitnessEvaluator:
         examples: Sequence[TrainingExample],
         language_sample_limit: int = DEFAULT_LANGUAGE_SAMPLE_LIMIT,
         config: GrammarConfig = DEFAULT_GRAMMAR_CONFIG,
+        max_length: int = MAX_LANGUAGE_LENGTH,
     ) -> None:
         if language_sample_limit < 1:
             raise ValueError("language_sample_limit must be at least 1.")
+        if max_length < 1:
+            raise ValueError("max_length must be at least 1.")
         self.examples = tuple(examples)
         self.texts = tuple(example.text for example in self.examples)
         self.language_sample_limit = language_sample_limit
         self.config = config
         longest_example = max(len(example.text) for example in self.examples)
-        if longest_example > MAX_LANGUAGE_LENGTH:
+        if longest_example > max_length:
             raise ValueError(
-                f"The specification bounds generated strings at length {MAX_LANGUAGE_LENGTH}, "
+                f"The selected maximum language length is {max_length}, "
                 f"but the data contains a length-{longest_example} example."
             )
-        self.max_length = MAX_LANGUAGE_LENGTH
+        self.max_length = max_length
         self.substrings_by_length = collect_substrings(self.texts)
         self._cache: dict[frozenset[Rule], FitnessBreakdown] = {}
 
@@ -1213,6 +1222,7 @@ def run(
     config: GrammarConfig = DEFAULT_GRAMMAR_CONFIG,
     target_equivalence_checker: TargetEquivalenceChecker | None = None,
     target_equivalence_interval: int = DEFAULT_TARGET_EQUIVALENCE_INTERVAL,
+    max_language_length: int = MAX_LANGUAGE_LENGTH,
 ) -> RunResult:
     if generations < 1:
         raise ValueError("generations must be at least 1.")
@@ -1223,7 +1233,12 @@ def run(
     if target_equivalence_checker is not None:
         target_equivalence_checker.validate_examples(examples)
 
-    evaluator = FitnessEvaluator(examples, language_sample_limit, config)
+    evaluator = FitnessEvaluator(
+        examples,
+        language_sample_limit,
+        config,
+        max_length=max_language_length,
+    )
     population = [random_individual(rng, config) for _ in range(population_size)]
     for individual in population:
         evaluator.score(individual)
@@ -1418,6 +1433,12 @@ def parse_arguments() -> argparse.Namespace:
         help="representative language size for Levenshtein smoothing (default: 256)",
     )
     parser.add_argument(
+        "--max-language-length",
+        type=int,
+        default=MAX_LANGUAGE_LENGTH,
+        help=f"maximum generated-string length used in fitness (default: {MAX_LANGUAGE_LENGTH})",
+    )
+    parser.add_argument(
         "--target-grammar",
         type=Path,
         help=(
@@ -1464,11 +1485,17 @@ def main() -> None:
         config = GrammarConfig.from_count(args.nonterminals)
     except ValueError as error:
         raise SystemExit(f"error: {error}") from error
+    if args.max_language_length < 1:
+        raise SystemExit("error: max language length must be at least 1")
     examples = load_data(args.data, config)
     target_checker: TargetEquivalenceChecker | None = None
     if args.target_grammar is not None:
         try:
-            target = load_target_grammar(args.target_grammar, config)
+            target = load_target_grammar(
+                args.target_grammar,
+                config,
+                max_language_length=args.max_language_length,
+            )
             target_checker = TargetEquivalenceChecker(target, config)
             target_checker.validate_examples(examples)
         except (OSError, ValueError) as error:
@@ -1495,6 +1522,7 @@ def main() -> None:
                     config=config,
                     target_equivalence_checker=target_checker,
                     target_equivalence_interval=args.target_equivalence_interval,
+                    max_language_length=args.max_language_length,
                 )
             )
 
@@ -1537,6 +1565,7 @@ def main() -> None:
             config=config,
             target_equivalence_checker=target_checker,
             target_equivalence_interval=args.target_equivalence_interval,
+            max_language_length=args.max_language_length,
         )
 
     if args.graph:
@@ -1566,7 +1595,9 @@ def main() -> None:
         precision_label = "Precision" if metrics.language_size_exact else "Precision (upper bound)"
         print(f"{precision_label}: {metrics.precision:.6f}")
         print(f"Average similarity: {metrics.similarity:.6f}")
-        print(f"Generated strings through length {MAX_LANGUAGE_LENGTH}: {language_label}")
+        print(
+            f"Generated strings through length {args.max_language_length}: {language_label}"
+        )
     print(f"Production rules: {len(result.best.rules)}")
     print(f"Nonterminals: {', '.join(config.nonterminals)}")
     if result.target_equivalent is not None and result.target_equivalent.rules == result.best.rules:
