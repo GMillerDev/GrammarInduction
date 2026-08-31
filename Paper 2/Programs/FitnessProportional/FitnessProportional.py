@@ -1,6 +1,7 @@
-"""Paper 2 grammatical evolution with fitness-landscape flattening.
+"""Grammatical evolution with sampled fitness-proportional selection.
 
-The program follows the CS 4731 Paper 2 specification.  It evolves grammars
+This experiment isolates the Paper 2 selection operator while retaining the
+original core fitness function.  It evolves grammars
 over a configurable fixed set of nonterminals and the terminals a, b, c,
 using N1 as the start symbol.
 
@@ -62,10 +63,7 @@ C1 = 100.0
 C2 = 80.0
 C3 = 2.0
 C4 = 0.1
-FLATTENING_LOWER_BOUND = 95.0
-FLATTENING_UPPER_BOUND = 110.0
-FLATTENED_FITNESS = 95.0
-MAX_LANGUAGE_LENGTH = 15  # Must be at least the longest string in the selected data.
+MAX_LANGUAGE_LENGTH = 30  # Must be at least the longest string in the selected data.
 LANGUAGE_CELL_LIMIT = 1024
 TARGET_LANGUAGE_STORAGE_LIMIT = 10_000
 DEFAULT_TARGET_EQUIVALENCE_INTERVAL = 25
@@ -159,7 +157,6 @@ class FitnessBreakdown:
     language_size_lower_bound: int
     language_size_exact: bool
     rule_count: int
-    core_fitness: float | None = None
 
 
 @dataclass
@@ -559,18 +556,11 @@ def crossover(
     return Individual(child_one), Individual(child_two)
 
 
-def flatten_fitness(core_fitness: float) -> float:
-    """Apply the Paper 2 plateau transform to a core fitness value."""
-    if FLATTENING_LOWER_BOUND <= core_fitness <= FLATTENING_UPPER_BOUND:
-        return FLATTENED_FITNESS
-    return core_fitness
-
-
 def fitness_proportional_selection(
     population: Sequence[Individual],
     rng: random.Random,
 ) -> Individual:
-    """Select from a random sample using transformed-fitness proportions.
+    """Select from a random sample using fitness-proportional weights.
 
     Paper 2 specifies a fresh sample of ten for each parent selection.  Runs
     with a smaller test population use the complete population.  Clamping at
@@ -1152,13 +1142,12 @@ class FitnessEvaluator:
             else 0.0
         )
         similarity = sum(similarities) / example_count
-        core_fitness = (
+        value = (
             C1 * recall
             + C2 * precision
             + C3 * similarity
             - C4 * len(individual.rules)
         )
-        value = flatten_fitness(core_fitness)
         result = FitnessBreakdown(
             fitness=value,
             recall=recall,
@@ -1168,7 +1157,6 @@ class FitnessEvaluator:
             language_size_lower_bound=language.size_lower_bound,
             language_size_exact=language.exact_size,
             rule_count=len(individual.rules),
-            core_fitness=core_fitness,
         )
         individual.fitness = value
         self._cache[individual.rules] = result
@@ -1398,7 +1386,7 @@ def parse_arguments() -> argparse.Namespace:
     if not default_data.exists():
         default_data = data_directory / "Spreadsheets" / "E1Data.xlsx"
     parser = argparse.ArgumentParser(
-        description="Run the Paper 2 fitness-landscape-flattening experiment."
+        description="Run the sampled fitness-proportional-selection experiment."
     )
     parser.add_argument(
         "data",

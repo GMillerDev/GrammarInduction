@@ -69,9 +69,6 @@ class GrammaticalEvolutionTests(unittest.TestCase):
             breakdown.fitness,
             ge.C1 + ge.C2 * breakdown.precision + ge.C3 - ge.C4 * 6,
         )
-        self.assertAlmostEqual(
-            breakdown.fitness, breakdown.core_fitness  # type: ignore[arg-type]
-        )
 
     def test_revised_fitness_penalizes_overgeneralization(self) -> None:
         evaluator = ge.FitnessEvaluator(self.examples, language_sample_limit=64)
@@ -84,24 +81,20 @@ class GrammaticalEvolutionTests(unittest.TestCase):
         self.assertLess(universal_metrics.precision, 0.1)
         self.assertGreater(target_metrics.fitness, universal_metrics.fitness)
 
-    def test_fitness_plateau_transform_has_inclusive_boundaries(self) -> None:
-        self.assertEqual(ge.flatten_fitness(94.999), 94.999)
-        self.assertEqual(ge.flatten_fitness(95.0), 95.0)
-        self.assertEqual(ge.flatten_fitness(102.5), 95.0)
-        self.assertEqual(ge.flatten_fitness(110.0), 95.0)
-        self.assertEqual(ge.flatten_fitness(110.001), 110.001)
-
-    def test_overgeneralized_fitness_is_flattened_but_core_is_retained(self) -> None:
+    def test_overgeneralized_fitness_uses_original_core_formula(self) -> None:
         evaluator = ge.FitnessEvaluator(self.examples, language_sample_limit=64)
         metrics = evaluator.breakdown(ge.Individual(self.universal_rules))
 
-        self.assertIsNotNone(metrics.core_fitness)
-        assert metrics.core_fitness is not None
-        self.assertGreaterEqual(metrics.core_fitness, ge.FLATTENING_LOWER_BOUND)
-        self.assertLessEqual(metrics.core_fitness, ge.FLATTENING_UPPER_BOUND)
-        self.assertEqual(metrics.fitness, ge.FLATTENED_FITNESS)
+        expected = (
+            ge.C1 * metrics.recall
+            + ge.C2 * metrics.precision
+            + ge.C3 * metrics.similarity
+            - ge.C4 * metrics.rule_count
+        )
+        self.assertAlmostEqual(metrics.fitness, expected)
+        self.assertNotEqual(metrics.fitness, 95.0)
 
-    def test_selection_uses_transformed_fitness_within_a_sample_of_ten(self) -> None:
+    def test_selection_uses_fitness_within_a_sample_of_ten(self) -> None:
         class RecordingRandom:
             def __init__(self) -> None:
                 self.sample_size: int | None = None
